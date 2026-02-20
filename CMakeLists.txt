@@ -1,34 +1,55 @@
 cmake_minimum_required(VERSION 3.16)
-project(Atoms LANGUAGES CXX)
+project(Atoms LANGUAGES CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+if(NOT APPLE)
+  message(FATAL_ERROR "This project uses Metal and is macOS-only.")
+endif()
+
 # Dependencies
-find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 
-# macOS: silence OpenGL deprecation warnings (OpenGL deprecated since 10.14 but still works)
-if(APPLE)
-  add_compile_definitions(GL_SILENCE_DEPRECATION)
-endif()
+# metal-cpp (header-only)
+include(FetchContent)
+FetchContent_Declare(
+  metal-cpp
+  GIT_REPOSITORY https://github.com/bkaradzic/metal-cpp
+  GIT_TAG metal-cpp_26
+)
+FetchContent_Populate(metal-cpp)
 
-# Common libraries for all executables
-set(ATOM_LIBS OpenGL::GL GLEW::GLEW glfw glm::glm)
+# Metal shaders: compiled at runtime (no build-time Metal toolchain required)
 
-# atom - 2D Bohr model
-add_executable(atom src/atom.cpp)
-target_link_libraries(atom PRIVATE ${ATOM_LIBS})
+# Common Metal setup for all targets
+set(METAL_FRAMEWORKS "-framework Metal -framework Foundation -framework QuartzCore -framework AppKit -framework CoreGraphics")
+set(METAL_INCLUDES ${metal-cpp_SOURCE_DIR})
 
-# atom_raytracer - Ray-traced 3D visualization
-add_executable(atom_raytracer src/atom_raytracer.cpp)
-target_link_libraries(atom_raytracer PRIVATE ${ATOM_LIBS})
+# metal_test - Phase 1 verification (empty window, clear color)
+add_executable(metal_test
+  src/metal_test.cpp
+  src/metal_bridge.mm
+)
+target_include_directories(metal_test PRIVATE ${METAL_INCLUDES})
+target_link_libraries(metal_test PRIVATE glfw ${METAL_FRAMEWORKS})
 
-# atom_realtime - Real-time 3D particle visualization (uses GLU)
-add_executable(atom_realtime src/atom_realtime.cpp)
-target_link_libraries(atom_realtime PRIVATE ${ATOM_LIBS} OpenGL::GLU)
+# atom - 2D Bohr model (Metal)
+add_executable(atom src/atom.cpp src/metal_bridge.mm)
+target_include_directories(atom PRIVATE ${METAL_INCLUDES})
+target_link_libraries(atom PRIVATE glfw glm::glm ${METAL_FRAMEWORKS})
 
-# wave_atom_2d - 2D wave visualization
-add_executable(wave_atom_2d src/wave_atom_2d.cpp)
-target_link_libraries(wave_atom_2d PRIVATE ${ATOM_LIBS})
+# atom_realtime - Real-time 3D particle visualization (Metal, instanced)
+add_executable(atom_realtime src/atom_realtime.cpp src/metal_bridge.mm)
+target_include_directories(atom_realtime PRIVATE ${METAL_INCLUDES})
+target_link_libraries(atom_realtime PRIVATE glfw glm::glm ${METAL_FRAMEWORKS})
+
+# atom_raytracer - Ray-traced 3D particle visualization (Metal)
+add_executable(atom_raytracer src/atom_raytracer.cpp src/metal_bridge.mm)
+target_include_directories(atom_raytracer PRIVATE ${METAL_INCLUDES})
+target_link_libraries(atom_raytracer PRIVATE glfw glm::glm ${METAL_FRAMEWORKS})
+
+# wave_atom_2d - 2D wave visualization (Metal)
+add_executable(wave_atom_2d src/wave_atom_2d.cpp src/metal_bridge.mm)
+target_include_directories(wave_atom_2d PRIVATE ${METAL_INCLUDES})
+target_link_libraries(wave_atom_2d PRIVATE glfw glm::glm ${METAL_FRAMEWORKS})
