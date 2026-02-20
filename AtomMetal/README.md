@@ -1,0 +1,106 @@
+# AtomMetal — Hydrogen Quantum Orbital Visualizer (Native Metal)
+
+A macOS-native real-time 3D visualization of hydrogen atom quantum orbitals,
+built with Apple Metal, Cocoa, and Core Text. No OpenGL, no GLFW, no GLM.
+
+## What it visualizes
+
+Electron probability distributions derived from the time-independent Schrödinger
+equation for hydrogen. Particles are sampled from |ψ_nlm(r, θ, φ)|² using
+pre-computed cumulative distribution functions per quantum state.
+
+## Requirements
+
+- macOS 13.0 or later
+- CMake 3.21+
+- Xcode / Apple Command Line Tools
+
+No third-party libraries. All dependencies are system frameworks: Metal, MetalKit,
+Cocoa, CoreGraphics, CoreText.
+
+## Build
+
+```bash
+cd AtomMetal
+cmake -G "Unix Makefiles" -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/AtomMetal.app/Contents/MacOS/AtomMetal
+```
+
+## Controls
+
+| Key     | Action                        |
+|---------|-------------------------------|
+| W / S   | Increase / decrease n         |
+| E / D   | Increase / decrease l         |
+| R / F   | Increase / decrease m         |
+| T / G   | +/- 100,000 particles         |
+| C       | Toggle color mode (fire/inferno) |
+| V       | Toggle realtime / raytraced   |
+| X       | Toggle cutaway view           |
+| Space   | Pause / resume animation      |
+| Drag    | Orbit camera                  |
+| Scroll  | Zoom                          |
+
+## Quantum numbers
+
+| n | l | m  | Orbital | Shape            |
+|---|---|----|---------|------------------|
+| 1 | 0 | 0  | 1s      | Sphere           |
+| 2 | 0 | 0  | 2s      | Sphere + node    |
+| 2 | 1 | 0  | 2pz     | Dumbbell (z)     |
+| 2 | 1 | ±1 | 2px/y   | Dumbbell (x/y)   |
+| 3 | 2 | 0  | 3dz²    | 4-lobe (z)       |
+| 3 | 2 | ±2 | 3dxy    | 4-lobe flat      |
+
+Starts at **n=2, l=1, m=0** (2pz, dumbbell shape).
+
+## Render modes
+
+- **Realtime** (default): MTLPrimitiveTypePoint with sphere impostor in the
+  fragment shader. 250,000 particles at 60fps on M1+.
+- **Raytraced** (V): Metal compute kernel dispatched per pixel. Each thread
+  traces a ray and finds the closest sphere hit with shadow rays. Suited for
+  ≤100,000 particles.
+
+## Physics
+
+- Probability density: |R_nl(r)|² × |P_l^|m|(cos θ)|²
+- Radial part R_nl(r): associated Laguerre polynomial via 3-term recurrence
+- Angular part: associated Legendre polynomial P_l^|m| (always uses |m|)
+- CDF sampling: 4096 radial bins × 2048 theta bins per (n, l, m) state, cached
+  in an unordered_map (rebuilt only on quantum number change)
+- Probability current animation: v_φ = ℏm / (mₑ r sin θ), advances φ per frame
+  at dt = 0.5 while holding r and θ constant
+
+## Architecture
+
+```
+AtomMetal/
+  Source/
+    main.mm               NSApplication entry point
+    AppDelegate.mm        Window creation
+    MetalView.mm          MTKView: render loop, camera, keyboard
+    Renderer.mm           Metal pipelines, buffers, draw calls
+    SimdMath.h            lookAt, perspective, inverse4x4 (no GLM)
+    Physics/
+      WaveFunction.cpp    Radial/Legendre/probability density
+      CDFSampler.cpp      Inverse-CDF sampling, (n,l,m) cache map
+      ProbabilityCurrent.cpp  v_phi velocity field + particle update
+    Scene/
+      ParticleSystem.mm   Particle generation + animation
+      PointCharge.mm      Coulomb potential
+      Grid.mm             XZ reference grid
+    HUD/
+      HUDRenderer.mm      Core Text -> MTLTexture overlay
+  Shaders/
+    ShaderTypes.h         Shared CPU/GPU structs
+    OrbitalShaders.metal  Point cloud + sphere impostor
+    ChargeShaders.metal   Instanced charge spheres
+    GridShaders.metal     XZ grid lines
+    RaytracerShaders.metal  Compute kernel + blit
+    HUDShaders.metal      HUD quad compositing
+```
+
+Shaders are compiled at runtime from `.metal` source files located in
+`AtomMetal.app/Contents/Resources/Shaders/` (copied there by CMake post-build).
