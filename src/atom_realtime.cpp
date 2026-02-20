@@ -1,6 +1,10 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#if defined(__APPLE__)
+#include <OpenGL/glu.h>
+#else
 #include <GL/glu.h>
+#endif
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -295,7 +299,7 @@ struct Camera {
     double lastX = 0.0, lastY = 0.0;
 
     vec3 position() const {
-        float clampedElevation = clamp(elevation, 0.01f, float(M_PI) - 0.01f);
+        float clampedElevation = std::clamp(elevation, 0.01f, float(M_PI) - 0.01f);
         return vec3(
             radius * sin(clampedElevation) * cos(azimuth),
             radius * cos(clampedElevation),
@@ -395,8 +399,13 @@ struct Engine {
 
     Engine() {
         if (!glfwInit()) exit(-1);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
         window = glfwCreateWindow(800, 600, "Atom Prob-Flow", NULL, NULL);
         glfwMakeContextCurrent(window);
+        glewExperimental = GL_TRUE;
         glewInit();
         glEnable(GL_DEPTH_TEST);
 
