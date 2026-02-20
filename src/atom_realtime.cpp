@@ -1,676 +1,458 @@
-#include <GL/glew.h>
+#define NS_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#include <Foundation/Foundation.hpp>
+#include <QuartzCore/QuartzCore.hpp>
+#include <Metal/Metal.hpp>
+
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
-#if defined(__APPLE__)
-#include <OpenGL/glu.h>
-#else
-#include <GL/glu.h>
-#endif
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <vector>
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
-#include <iomanip>
-#include <thread>
-#include <chrono>
-#include <fstream>
 #include <complex>
 #include <random>
+#include <algorithm>
+#include <mach-o/dyld.h>
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-using namespace glm;
-using namespace std;
 
-// ================= Constants ================= //
+extern "C" void* attachMetalLayer(void*, void*);
+
 const float a0 = 1;
-float electron_r = 1.5f; // radius for spheres
+float electron_r = 1.5f;
 const double hbar = 1;
 const double m_e = 1;
 const double zmSpeed = 10.0;
-
-// --- Global quantum numbers ---
 int n = 2, l = 1, m = 0, N = 100000;
 
-// ================= Physics Sampling ================= //
 struct Particle {
-    vec3 pos;
-    vec3 vel = vec3(0.0f);
-    vec4 color;
-    Particle(vec3 p, vec4 c = vec4(0.0f, 0.5f, 1.0f, 1.0f)) : pos(p), color(c){}
+    glm::vec3 pos;
+    glm::vec3 vel = glm::vec3(0.0f);
+    glm::vec4 color;
+    Particle(glm::vec3 p, glm::vec4 c = glm::vec4(0.0f, 0.5f, 1.0f, 1.0f)) : pos(p), color(c) {}
 };
-vector<Particle> particles;
+std::vector<Particle> particles;
 
-// --- random devices ---
-random_device rd; mt19937 gen(rd()); uniform_real_distribution<float> dis(0.0f, 1.0f);
+std::random_device rd;
+std::mt19937 gen(rd());
+std::uniform_real_distribution<float> dis(0.0f, 1.0f);
 
-// --- sample R ---                 <- uses CDF sampling
-double sampleR(int n, int l, mt19937& gen) {
-    const int N = 4096;
-    //const double a0 = 1.0;
+double sampleR(int n, int l, std::mt19937& gen) {
+    const int Nc = 4096;
     const double rMax = 10.0 * n * n * a0;
-
-    static vector<double> cdf;
+    static std::vector<double> cdf;
     static bool built = false;
-
     if (!built) {
-        cdf.resize(N);
-        double dr = rMax / (N - 1);
+        cdf.resize(Nc);
+        double dr = rMax / (Nc - 1);
         double sum = 0.0;
-
-        for (int i = 0; i < N; ++i) {
+        for (int i = 0; i < Nc; ++i) {
             double r = i * dr;
             double rho = 2.0 * r / (n * a0);
-
-            // Associated Laguerre L_{n-l-1}^{2l+1}(rho)
             int k = n - l - 1;
             int alpha = 2 * l + 1;
-
             double L = 1.0, Lm1 = 1.0 + alpha - rho;
             if (k == 1) L = Lm1;
             else if (k > 1) {
                 double Lm2 = 1.0;
                 for (int j = 2; j <= k; ++j) {
-                    L = ((2*j - 1 + alpha - rho) * Lm1 -
-                         (j - 1 + alpha) * Lm2) / j;
-                    Lm2 = Lm1;
-                    Lm1 = L;
+                    L = ((2*j - 1 + alpha - rho) * Lm1 - (j - 1 + alpha) * Lm2) / j;
+                    Lm2 = Lm1; Lm1 = L;
                 }
             }
-
             double norm = pow(2.0 / (n * a0), 3) * tgamma(n - l) / (2.0 * n * tgamma(n + l + 1));
             double R = sqrt(norm) * exp(-rho / 2.0) * pow(rho, l) * L;
-
-            double pdf = r * r * R * R;
-            sum += pdf;
+            sum += r * r * R * R;
             cdf[i] = sum;
         }
-
         for (double& v : cdf) v /= sum;
         built = true;
     }
-
-    uniform_real_distribution<double> dis(0.0, 1.0);
-    double u = dis(gen);
-
-    int idx = lower_bound(cdf.begin(), cdf.end(), u) - cdf.begin();
-    return idx * (rMax / (N - 1));
+    std::uniform_real_distribution<double> udis(0.0, 1.0);
+    double u = udis(gen);
+    int idx = std::lower_bound(cdf.begin(), cdf.end(), u) - cdf.begin();
+    return idx * (rMax / (Nc - 1));
 }
-// --- sample Theta ---             <- uses CDF sampling
-double sampleTheta(int l, int m, mt19937& gen) {
-    const int N = 2048;
-    static vector<double> cdf;
+
+double sampleTheta(int l, int m, std::mt19937& gen) {
+    const int Nc = 2048;
+    static std::vector<double> cdf;
     static bool built = false;
-
     if (!built) {
-        cdf.resize(N);
-        double dtheta = M_PI / (N - 1);
+        cdf.resize(Nc);
+        double dtheta = M_PI / (Nc - 1);
         double sum = 0.0;
-
-        for (int i = 0; i < N; ++i) {
+        for (int i = 0; i < Nc; ++i) {
             double theta = i * dtheta;
             double x = cos(theta);
-
-            // Associated Legendre P_l^m(x)
             double Pmm = 1.0;
             if (m > 0) {
                 double somx2 = sqrt((1.0 - x) * (1.0 + x));
                 double fact = 1.0;
-                for (int j = 1; j <= m; ++j) {
-                    Pmm *= -fact * somx2;
-                    fact += 2.0;
-                }
+                for (int j = 1; j <= m; ++j) { Pmm *= -fact * somx2; fact += 2.0; }
             }
-
             double Plm;
-            if (l == m) {
-                Plm = Pmm;
-            } else {
+            if (l == m) Plm = Pmm;
+            else {
                 double Pm1m = x * (2 * m + 1) * Pmm;
-                if (l == m + 1) {
-                    Plm = Pm1m;
-                } else {
-                    double Pll;
+                if (l == m + 1) Plm = Pm1m;
+                else {
                     for (int ll = m + 2; ll <= l; ++ll) {
-                        Pll = ((2 * ll - 1) * x * Pm1m -
-                               (ll + m - 1) * Pmm) / (ll - m);
-                        Pmm = Pm1m;
-                        Pm1m = Pll;
+                        double Pll = ((2*ll - 1) * x * Pm1m - (ll + m - 1) * Pmm) / (ll - m);
+                        Pmm = Pm1m; Pm1m = Pll;
                     }
                     Plm = Pm1m;
                 }
             }
-
-            double pdf = sin(theta) * Plm * Plm;
-            sum += pdf;
+            sum += sin(theta) * Plm * Plm;
             cdf[i] = sum;
         }
-
         for (double& v : cdf) v /= sum;
         built = true;
     }
-
-    uniform_real_distribution<double> dis(0.0, 1.0);
-    double u = dis(gen);
-
-    int idx = lower_bound(cdf.begin(), cdf.end(), u) - cdf.begin();
-    return idx * (M_PI / (N - 1));
+    std::uniform_real_distribution<double> udis(0.0, 1.0);
+    int idx = std::lower_bound(cdf.begin(), cdf.end(), udis(gen)) - cdf.begin();
+    return idx * (M_PI / (Nc - 1));
 }
-// --- sample Phi (uniform) ---     <- uses CDF sampling
-float samplePhi(float n, float l, float m) {
-    return 2.0f * M_PI * dis(gen);
-}
-// --- calculate prob current ---
-vec3 calculateProbabilityFlow(Particle& p, int n, int l, int m) {
-    double r = length(p.pos);   if (r < 1e-6) return vec3(0.0f);
-    double theta = acos(p.pos.y / r); 
-    double phi = atan2(p.pos.z, p.pos.x); 
 
+float samplePhi(float, float, float) { return 2.0f * (float)M_PI * dis(gen); }
 
-    //Compute magnitude
-    double sinTheta = sin(theta);  if (abs(sinTheta) < 1e-4) sinTheta = 1e-4;
+glm::vec3 calculateProbabilityFlow(Particle& p, int n, int l, int m) {
+    double r = glm::length(p.pos);
+    if (r < 1e-6) return glm::vec3(0.0f);
+    double theta = acos(p.pos.y / r);
+    double phi = atan2(p.pos.z, p.pos.x);
+    double sinTheta = sin(theta);
+    if (fabs(sinTheta) < 1e-4) sinTheta = 1e-4;
     double v_mag = hbar * m / (m_e * r * sinTheta);
-
-    //Convert to Cartesian
-    double vx = -v_mag * sin(phi);
-    double vy = 0.0; 
-    double vz =  v_mag * cos(phi);
-
-    return vec3((float)vx, (float)vy, (float)vz);
+    return glm::vec3(-(float)(v_mag * sin(phi)), 0.0f, (float)(v_mag * cos(phi)));
 }
 
-// --- color map ---
-vec4 heatmap_fire(float value) {
-    // Ensure value is clamped between 0 and 1
+glm::vec4 heatmap_fire(float value) {
     value = std::max(0.0f, std::min(1.0f, value));
-
-    // Define color stops for the "Heat/Fire" pattern
-    // Order: Black -> Dark Purple -> Red -> Orange -> Yellow -> White
     const int num_stops = 6;
-    vec4 colors[num_stops] = {
-        {0.0f, 0.0f, 0.0f, 1.0f}, // 0.0: Black
-        {0.5f, 0.0f, 0.99f, 1.0f}, // 0.2: Dark Purple
-        {0.8f, 0.0f, 0.0f, 1.0f}, // 0.4: Deep Red
-        {1.0f, 0.5f, 0.0f, 1.0f}, // 0.6: Orange
-        {1.0f, 1.0f, 0.0f, 1.0f}, // 0.8: Yellow
-        {1.0f, 1.0f, 1.0f, 1.0f}  // 1.0: White
+    glm::vec4 colors[6] = {
+        {0.0f, 0.0f, 0.0f, 1.0f}, {0.5f, 0.0f, 0.99f, 1.0f}, {0.8f, 0.0f, 0.0f, 1.0f},
+        {1.0f, 0.5f, 0.0f, 1.0f}, {1.0f, 1.0f, 0.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}
     };
-
-    // Find which segment the value falls into
     float scaled_v = value * (num_stops - 1);
-    int i = static_cast<int>(scaled_v);
+    int i = (int)scaled_v;
     int next_i = std::min(i + 1, num_stops - 1);
-    
-    // Calculate how far we are between stop 'i' and 'next_i'
     float local_t = scaled_v - i;
-
-    // Linearly interpolate between the two colors
-    vec4 result;
-    result.r = colors[i].r + local_t * (colors[next_i].r - colors[i].r);
-    result.g = colors[i].g + local_t * (colors[next_i].g - colors[i].g);
-    result.b = colors[i].b + local_t * (colors[next_i].b - colors[i].b);
-    result.a = 1.0f; // Solid opacity
-
-    return result;
+    return glm::vec4(
+        colors[i].r + local_t * (colors[next_i].r - colors[i].r),
+        colors[i].g + local_t * (colors[next_i].g - colors[i].g),
+        colors[i].b + local_t * (colors[next_i].b - colors[i].b),
+        1.0f);
 }
-vec4 inferno(double r, double theta, double phi, int n, int l, int m) {
-    // --- radial part |R(r)|^2 ---
-    double rho = 2.0 * r / (n * a0);
 
+glm::vec4 inferno(double r, double theta, double phi, int n, int l, int m) {
+    double rho = 2.0 * r / (n * a0);
     int k = n - l - 1;
     int alpha = 2 * l + 1;
-
     double L = 1.0;
-    if (k == 1) {
-        L = 1.0 + alpha - rho;
-    } else if (k > 1) {
-        double Lm2 = 1.0;
-        double Lm1 = 1.0 + alpha - rho;
+    if (k == 1) L = 1.0 + alpha - rho;
+    else if (k > 1) {
+        double Lm2 = 1.0, Lm1 = 1.0 + alpha - rho;
         for (int j = 2; j <= k; ++j) {
-            L = ((2*j - 1 + alpha - rho) * Lm1 -
-                 (j - 1 + alpha) * Lm2) / j;
-            Lm2 = Lm1;
-            Lm1 = L;
+            L = ((2*j - 1 + alpha - rho) * Lm1 - (j - 1 + alpha) * Lm2) / j;
+            Lm2 = Lm1; Lm1 = L;
         }
     }
-
-    double norm = pow(2.0 / (n * a0), 3)
-                * tgamma(n - l)
-                / (2.0 * n * tgamma(n + l + 1));
-
+    double norm = pow(2.0 / (n * a0), 3) * tgamma(n - l) / (2.0 * n * tgamma(n + l + 1));
     double R = sqrt(norm) * exp(-rho / 2.0) * pow(rho, l) * L;
     double radial = R * R;
-
-    // --- angular part |P_l^m(cosθ)|^2 ---
     double x = cos(theta);
-
     double Pmm = 1.0;
     if (m > 0) {
         double somx2 = sqrt((1.0 - x) * (1.0 + x));
         double fact = 1.0;
-        for (int j = 1; j <= m; ++j) {
-            Pmm *= -fact * somx2;
-            fact += 2.0;
-        }
+        for (int j = 1; j <= m; ++j) { Pmm *= -fact * somx2; fact += 2.0; }
     }
-
     double Plm;
-    if (l == m) {
-        Plm = Pmm;
-    } else {
+    if (l == m) Plm = Pmm;
+    else {
         double Pm1m = x * (2*m + 1) * Pmm;
-        if (l == m + 1) {
-            Plm = Pm1m;
-        } else {
+        if (l == m + 1) Plm = Pm1m;
+        else {
             for (int ll = m + 2; ll <= l; ++ll) {
-                double Pll = ((2*ll - 1) * x * Pm1m -
-                              (ll + m - 1) * Pmm) / (ll - m);
-                Pmm = Pm1m;
-                Pm1m = Pll;
+                double Pll = ((2*ll - 1) * x * Pm1m - (ll + m - 1) * Pmm) / (ll - m);
+                Pmm = Pm1m; Pm1m = Pll;
             }
             Plm = Pm1m;
         }
     }
-
-    double angular = Plm * Plm;
-
-    double intensity = radial * angular;
-
-    //cout << "intensity: " << intensity << endl;
-
-    return heatmap_fire(intensity * 1.5 * pow(5, n)); // Scale for better color mapping
+    double intensity = radial * Plm * Plm;
+    return heatmap_fire((float)(intensity * 1.5 * pow(5, n)));
 }
 
-
-// ================= camera ================= //
 struct Camera {
-    vec3 target = vec3(0.0f, 0.0f, 0.0f);
+    glm::vec3 target = glm::vec3(0.0f);
     float radius = 50.0f;
     float azimuth = 0.0f;
-    float elevation = M_PI / 2.0f;
+    float elevation = (float)M_PI / 2.0f;
     float orbitSpeed = 0.01f;
-    float panSpeed = 0.01f;
     double zoomSpeed = zmSpeed;
     bool dragging = false;
-    bool panning = false;
     double lastX = 0.0, lastY = 0.0;
 
-    vec3 position() const {
-        float clampedElevation = std::clamp(elevation, 0.01f, float(M_PI) - 0.01f);
-        return vec3(
-            radius * sin(clampedElevation) * cos(azimuth),
-            radius * cos(clampedElevation),
-            radius * sin(clampedElevation) * sin(azimuth)
-        );
+    glm::vec3 position() const {
+        float ce = std::clamp(elevation, 0.01f, (float)M_PI - 0.01f);
+        return glm::vec3(radius * sin(ce) * cos(azimuth), radius * cos(ce), radius * sin(ce) * sin(azimuth));
     }
-    void update() {
-        target = vec3(0.0f, 0.0f, 0.0f);
-    }
-
     void processMouseMove(double x, double y) {
-        float dx = float(x - lastX);
-        float dy = float(y - lastY);
+        float dx = (float)(x - lastX), dy = (float)(y - lastY);
         if (dragging) {
             azimuth += dx * orbitSpeed;
             elevation -= dy * orbitSpeed;
-            elevation = glm::clamp(elevation, 0.01f, float(M_PI) - 0.01f);
+            elevation = std::clamp(elevation, 0.01f, (float)M_PI - 0.01f);
         }
-        lastX = x;
-        lastY = y;
-        update();
+        lastX = x; lastY = y;
+        target = glm::vec3(0.0f);
     }
-    void processMouseButton(int button, int action, int mods, GLFWwindow* win) {
+    void processMouseButton(int button, int action, GLFWwindow* win) {
         if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_MIDDLE) {
-            if (action == GLFW_PRESS) {
-                dragging = true;
-                glfwGetCursorPos(win, &lastX, &lastY);
-            } else if (action == GLFW_RELEASE) {
-                dragging = false;
-            }
+            dragging = (action == GLFW_PRESS);
+            if (dragging) glfwGetCursorPos(win, &lastX, &lastY);
         }
     }
-    void processScroll(double xoffset, double yoffset) {
-        radius -= yoffset * zoomSpeed;
+    void processScroll(double, double yoffset) {
+        radius -= (float)yoffset * (float)zoomSpeed;
         if (radius < 1.0f) radius = 1.0f;
-        update();
-    };
-};
-Camera camera;
-vec3 sphericalToCartesian(float r, float theta, float phi){
-        float x = r * sin(theta) * cos(phi);
-        float y = r * cos(theta);
-        float z = r * sin(theta) * sin(phi);
-        return vec3(x, y, z);
+        target = glm::vec3(0.0f);
     }
-void generateParticles(int N) {
+};
+
+glm::vec3 sphericalToCartesian(float r, float theta, float phi) {
+    return glm::vec3(r * sin(theta) * cos(phi), r * cos(theta), r * sin(theta) * sin(phi));
+}
+
+void generateParticles(int Np) {
     particles.clear();
-    for (int i = 0; i < N; ++i) {
-        // --- get x, y, z, positions
-        vec3 pos = sphericalToCartesian(
-            sampleR(n, l, gen), 
-            sampleTheta(l, m, gen), 
-            samplePhi(n, l, m)
-        );
-        // --- color & add particle ---
-        float r = length(pos);
+    for (int i = 0; i < Np; ++i) {
+        glm::vec3 pos = sphericalToCartesian(
+            (float)sampleR(n, l, gen),
+            (float)sampleTheta(l, m, gen),
+            samplePhi(n, l, m));
+        float r = glm::length(pos);
         double theta = acos(pos.y / r);
         double phi = atan2(pos.z, pos.x);
-        vec4 col = inferno(r, theta, phi, n, l, m) ;
-        particles.emplace_back(pos, col);
+        particles.emplace_back(pos, inferno(r, theta, phi, n, l, m));
     }
 }
 
+static std::string getShaderPath() {
+    char path[1024];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) == 0) {
+        std::string exe(path);
+        size_t pos = exe.find_last_of("/");
+        if (pos != std::string::npos)
+            return exe.substr(0, pos) + "/../shaders/realtime.metal";
+    }
+    return "shaders/realtime.metal";
+}
+
+static std::string loadFile(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return "";
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
 struct Engine {
-    GLFWwindow* window;
-    int WIDTH = 800;
-    int HEIGHT = 600;
-
-    // renders vars
-    GLuint sphereVAO, sphereVBO;
-    int sphereVertexCount;
-    GLuint shaderProgram;
-    GLint modelLoc, viewLoc, projLoc, colorLoc;
-
-    // --- shaders ---
-    const char* vertexShaderSource = R"glsl(
-        #version 330 core
-        layout(location=0) in vec3 aPos; uniform mat4 model; uniform mat4 view;
-        uniform mat4 projection; out float lightIntensity;
-        void main() { gl_Position = projection * view * model * vec4(aPos, 1.0);
-            vec3 normal = normalize(aPos);
-            vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
-            lightIntensity = max(dot(normal, lightDir), 0.5); // 0.2 is ambient light
-        } )glsl";
-
-    const char* fragmentShaderSource = R"glsl(
-        #version 330 core
-        in float lightIntensity; 
-        out vec4 FragColor; 
-        uniform vec4 objectColor;
-
-        void main() { 
-            // Increase the power to make the 'center-facing' spot tighter and brighter
-            float glow = pow(lightIntensity, 2.0); 
-            FragColor = vec4(objectColor.rgb , objectColor.a); 
-        } )glsl";
+    GLFWwindow* window = nullptr;
+    int WIDTH = 800, HEIGHT = 600;
+    MTL::Device* device = nullptr;
+    MTL::CommandQueue* commandQueue = nullptr;
+    CA::MetalLayer* metalLayer = nullptr;
+    MTL::RenderPipelineState* pipeline = nullptr;
+    MTL::Buffer* sphereVertexBuffer = nullptr;
+    MTL::Buffer* instanceBuffer = nullptr;
+    MTL::Buffer* uniformBuffer = nullptr;
+    size_t sphereVertexCount = 0;
+    static const size_t MAX_INSTANCES = 300000;
 
     Engine() {
         if (!glfwInit()) exit(-1);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-        window = glfwCreateWindow(800, 600, "Atom Prob-Flow", NULL, NULL);
-        glfwMakeContextCurrent(window);
-        glewExperimental = GL_TRUE;
-        glewInit();
-        glEnable(GL_DEPTH_TEST);
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        window = glfwCreateWindow(WIDTH, HEIGHT, "Atom Prob-Flow - Metal", nullptr, nullptr);
+        if (!window) { glfwTerminate(); exit(-1); }
 
-        // Generate Sphere Vertices manually (like I did in the gravity sim)
-        vector<float> vertices;
-        float r = 0.05f; // Small sphere for particles
+        device = MTL::CreateSystemDefaultDevice();
+        if (!device) { glfwDestroyWindow(window); glfwTerminate(); exit(-1); }
+
+        metalLayer = (CA::MetalLayer*)attachMetalLayer(window, device);
+        if (!metalLayer) { device->release(); glfwDestroyWindow(window); glfwTerminate(); exit(-1); }
+
+        commandQueue = device->newCommandQueue();
+
+        std::vector<float> sphereVerts;
+        float r = 1.0f;
         int stacks = 10, sectors = 10;
-        for(int i = 0; i <= stacks; ++i){
-            float t1 = (float)i / stacks * M_PI;
-            float t2 = (float)(i+1) / stacks * M_PI;
-            for(int j = 0; j < sectors; ++j){
-                float p1 = (float)j / sectors * 2 * M_PI;
-                float p2 = (float)(j+1) / sectors * 2 * M_PI;
-                auto getPos = [&](float t, float p) {
-                    return vec3(r*sin(t)*cos(p), r*cos(t), r*sin(t)*sin(p));
+        for (int i = 0; i <= stacks; ++i) {
+            float t1 = (float)i / stacks * (float)M_PI;
+            float t2 = (float)(i + 1) / stacks * (float)M_PI;
+            for (int j = 0; j < sectors; ++j) {
+                float p1 = (float)j / sectors * 2.0f * (float)M_PI;
+                float p2 = (float)(j + 1) / sectors * 2.0f * (float)M_PI;
+                auto gp = [&](float t, float p) {
+                    return glm::vec3(r * sin(t) * cos(p), r * cos(t), r * sin(t) * sin(p));
                 };
-                vec3 v1 = getPos(t1, p1), v2 = getPos(t1, p2), v3 = getPos(t2, p1), v4 = getPos(t2, p2);
-                vertices.insert(vertices.end(), {v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z});
-                vertices.insert(vertices.end(), {v2.x, v2.y, v2.z, v4.x, v4.y, v4.z, v3.x, v3.y, v3.z});
+                glm::vec3 v1 = gp(t1, p1), v2 = gp(t1, p2), v3 = gp(t2, p1), v4 = gp(t2, p2);
+                sphereVerts.insert(sphereVerts.end(), {v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z});
+                sphereVerts.insert(sphereVerts.end(), {v2.x, v2.y, v2.z, v4.x, v4.y, v4.z, v3.x, v3.y, v3.z});
             }
         }
-        sphereVertexCount = vertices.size() / 3;
-        CreateVBOVAO(sphereVAO, sphereVBO, vertices);
+        sphereVertexCount = sphereVerts.size() / 3;
+        sphereVertexBuffer = device->newBuffer(sphereVerts.data(), sphereVerts.size() * sizeof(float), MTL::ResourceStorageModeShared);
 
-        GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-        glCompileShader(vertexShader);
+        NS::Error* err = nullptr;
+        std::string src = loadFile(getShaderPath());
+        MTL::Library* lib = src.empty() ? nullptr : device->newLibrary(NS::String::string(src.c_str(), NS::UTF8StringEncoding), nullptr, &err);
+        if (lib) {
+            MTL::Function* vertFn = lib->newFunction(NS::String::string("vertexRealtime", NS::UTF8StringEncoding));
+            MTL::Function* fragFn = lib->newFunction(NS::String::string("fragmentRealtime", NS::UTF8StringEncoding));
+            if (vertFn && fragFn) {
+                MTL::RenderPipelineDescriptor* desc = MTL::RenderPipelineDescriptor::alloc()->init();
+                desc->setVertexFunction(vertFn);
+                desc->setFragmentFunction(fragFn);
+                desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+                pipeline = device->newRenderPipelineState(desc, &err);
+                vertFn->release();
+                fragFn->release();
+                desc->release();
+            }
+            lib->release();
+        }
 
-        GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-        glCompileShader(fragmentShader);
-
-        shaderProgram = glCreateProgram();
-        glAttachShader(shaderProgram, vertexShader);
-        glAttachShader(shaderProgram, fragmentShader);
-        glLinkProgram(shaderProgram);
-
-        // Get uniform locations
-        modelLoc = glGetUniformLocation(shaderProgram, "model");
-        viewLoc  = glGetUniformLocation(shaderProgram, "view");
-        projLoc  = glGetUniformLocation(shaderProgram, "projection");
-        colorLoc = glGetUniformLocation(shaderProgram, "objectColor");
+        instanceBuffer = device->newBuffer(MAX_INSTANCES * 8 * sizeof(float), MTL::ResourceStorageModeShared);
+        uniformBuffer = device->newBuffer(128, MTL::ResourceStorageModeShared);
     }
-    vec3 sphericalToCartesian(float r, float theta, float phi){
-        float x = r * sin(theta) * cos(phi);
-        float y = r * cos(theta);
-        float z = r * sin(theta) * sin(phi);
-        return vec3(x, y, z);
-    }
-    void CreateVBOVAO(GLuint& VAO, GLuint& VBO, const vector<float>& vertices) {
-        glGenVertexArrays(1, &VAO);
-        glGenBuffers(1, &VBO);
-        glBindVertexArray(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-    }
-    void CreateVBOVAO(GLuint& VAO, GLuint& VBO, const float* vertices, size_t vertexCount) {
-        glGenVertexArrays(1, &VAO);
-        glGenBuffers(1, &VBO);
 
-        glBindVertexArray(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, vertexCount * sizeof(float), vertices, GL_STATIC_DRAW);
+    void drawSpheres(std::vector<Particle>& parts, Camera& camera) {
+        if (!pipeline || parts.empty()) return;
 
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glBindVertexArray(0);
-    }
-    void drawSpheres(vector<Particle>& particles) {
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(shaderProgram); // Use our new shaded system
-
-        mat4 projection = perspective(radians(45.0f), 800.0f/600.0f, 0.1f, 2000.0f);
-        mat4 view = lookAt(camera.position(), camera.target, vec3(0, 1, 0)); 
-
-        // Send view and projection to the shader
-        glUniformMatrix4fv(viewLoc, 1, GL_FALSE, value_ptr(view));
-        glUniformMatrix4fv(projLoc, 1, GL_FALSE, value_ptr(projection));
-
-        glBindVertexArray(sphereVAO);
-
-        for (auto& p : particles) {
+        size_t count = 0;
+        float* inst = (float*)instanceBuffer->contents();
+        for (auto& p : parts) {
             if (p.pos.x < 0 && p.pos.y > 0) continue;
-            mat4 model = translate(mat4(1.0f), p.pos);
-            model = scale(model, vec3(electron_r));
-            glUniformMatrix4fv(modelLoc, 1, GL_FALSE, value_ptr(model));
-            glUniform4f(colorLoc, p.color.r, p.color.g, p.color.b, p.color.a);
-            
-            glDrawArrays(GL_TRIANGLES, 0, sphereVertexCount);
+            inst[count * 8 + 0] = p.pos.x;
+            inst[count * 8 + 1] = p.pos.y;
+            inst[count * 8 + 2] = p.pos.z;
+            inst[count * 8 + 3] = electron_r;
+            inst[count * 8 + 4] = p.color.r;
+            inst[count * 8 + 5] = p.color.g;
+            inst[count * 8 + 6] = p.color.b;
+            inst[count * 8 + 7] = p.color.a;
+            count++;
         }
-    }
-    void setupCameraCallbacks() {
-        glfwSetWindowUserPointer(window, &camera);
-        glfwSetMouseButtonCallback(window, [](GLFWwindow* win, int button, int action, int mods) {
-            ((Camera*)glfwGetWindowUserPointer(win))->processMouseButton(button, action, mods, win);
-        });
-        glfwSetCursorPosCallback(window, [](GLFWwindow* win, double x, double y) {
-            ((Camera*)glfwGetWindowUserPointer(win))->processMouseMove(x, y);
-        });
-        glfwSetScrollCallback(window, [](GLFWwindow* win, double xoffset, double yoffset) {
-            ((Camera*)glfwGetWindowUserPointer(win))->processScroll(xoffset, yoffset);
-        });
-        // Key callback: modify global quantum numbers
-        glfwSetKeyCallback(window, [](GLFWwindow* win, int key, int scancode, int action, int mods) {
-            if (!(action == GLFW_PRESS || action == GLFW_REPEAT)) return;
+        if (count == 0) return;
 
-            if (key == GLFW_KEY_W) {
-                n += 1;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_S) {
-                n -= 1;
-                if (n < 1) n = 1;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_E) {
-                l += 1;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_D) {
-                l -= 1;
-                if (l < 0) l = 0;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_R) {
-                m += 1;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_F) {
-                m -= 1;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_T) {
-                N +=100000;
-                generateParticles(N);
-            } else if (key == GLFW_KEY_G) {
-                N -=100000;
-                generateParticles(N);
-            }
+        glm::mat4 view = glm::lookAt(camera.position(), camera.target, glm::vec3(0, 1, 0));
+        glm::mat4 proj = glm::perspective(glm::radians(45.0f), (float)WIDTH / HEIGHT, 0.1f, 2000.0f);
+        memcpy((char*)uniformBuffer->contents(), &view[0][0], 64);
+        memcpy((char*)uniformBuffer->contents() + 64, &proj[0][0], 64);
 
-            // Clamp to valid ranges
-            if (l > n - 1) l = n - 1;
-            if (l < 0) l = 0;
-            if (m > l) m = l;
-            if (m < -l) m = -l;
+        int w, h;
+        glfwGetFramebufferSize(window, &w, &h);
+        if (w <= 0 || h <= 0) return;
 
-            electron_r = float(n) / 3.0f;
-            cout << "Quantum numbers updated: n=" << n << " l=" << l << " m=" << m << " N=" << N << "\n";
-        });
+        metalLayer->setDrawableSize(CGSizeMake(w, h));
+        CA::MetalDrawable* drawable = metalLayer->nextDrawable();
+        if (!drawable) return;
+
+        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+
+        MTL::RenderPassDescriptor* passDesc = MTL::RenderPassDescriptor::renderPassDescriptor();
+        passDesc->colorAttachments()->object(0)->setTexture(drawable->texture());
+        passDesc->colorAttachments()->object(0)->setLoadAction(MTL::LoadActionClear);
+        passDesc->colorAttachments()->object(0)->setStoreAction(MTL::StoreActionStore);
+        passDesc->colorAttachments()->object(0)->setClearColor(MTL::ClearColor::Make(0.0, 0.0, 0.0, 1.0));
+
+        MTL::CommandBuffer* cmdBuf = commandQueue->commandBuffer();
+        MTL::RenderCommandEncoder* enc = cmdBuf->renderCommandEncoder(passDesc);
+
+        enc->setRenderPipelineState(pipeline);
+        enc->setVertexBuffer(sphereVertexBuffer, 0, 0);
+        enc->setVertexBuffer(instanceBuffer, 0, 1);
+        enc->setVertexBuffer(uniformBuffer, 0, 2);
+        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(sphereVertexCount), NS::UInteger(count));
+
+        enc->endEncoding();
+        cmdBuf->presentDrawable(drawable);
+        cmdBuf->commit();
+
+        pool->release();
     }
 };
-Engine engine;
 
-struct Grid {
-    GLuint gridVAO, gridVBO;
-    vector<float> vertices;
-    Grid() {
-        vertices = CreateGridVertices(500.0f, 2);
-        engine.CreateVBOVAO(gridVAO, gridVBO, vertices.data(), vertices.size());
-    }
-    void Draw (GLint objectColorLoc) {
-        glUseProgram(engine.shaderProgram);
-        glUniform4f(objectColorLoc, 1.0f, 1.0f, 1.0f, 0.5f);
-        glBindBuffer(GL_ARRAY_BUFFER, gridVBO);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_DYNAMIC_DRAW);
-        DrawGrid(engine.shaderProgram, gridVAO, vertices.size());
-    }
-    void DrawGrid(GLuint shaderProgram, GLuint gridVAO, size_t vertexCount) {
-        glUseProgram(shaderProgram);
-        glm::mat4 model = glm::mat4(1.0f); // Identity matrix for the grid
-        GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+static Engine* g_engine = nullptr;
+static Camera camera;
 
-        glBindVertexArray(gridVAO);
-        glPointSize(2.0f);
-        glDrawArrays(GL_LINES, 0, vertexCount / 3);
-        glBindVertexArray(0);
-    }
-    vector<float> CreateGridVertices(float size, int divisions) {
-        
-        std::vector<float> vertices;
-        float step = size / divisions;
-        float halfSize = size / 2.0f;
+int main() {
+    Engine engine;
+    g_engine = &engine;
+    glfwSetWindowUserPointer(engine.window, &camera);
+    glfwSetMouseButtonCallback(engine.window, [](GLFWwindow* win, int b, int a, int) {
+        ((Camera*)glfwGetWindowUserPointer(win))->processMouseButton(b, a, win);
+    });
+    glfwSetCursorPosCallback(engine.window, [](GLFWwindow* win, double x, double y) {
+        ((Camera*)glfwGetWindowUserPointer(win))->processMouseMove(x, y);
+    });
+    glfwSetScrollCallback(engine.window, [](GLFWwindow* win, double, double y) {
+        ((Camera*)glfwGetWindowUserPointer(win))->processScroll(0, y);
+    });
+    glfwSetKeyCallback(engine.window, [](GLFWwindow*, int key, int, int action, int) {
+        if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+        if (key == GLFW_KEY_W) { n++; generateParticles(N); }
+        else if (key == GLFW_KEY_S) { n = std::max(1, n - 1); generateParticles(N); }
+        else if (key == GLFW_KEY_E) { l++; generateParticles(N); }
+        else if (key == GLFW_KEY_D) { l = std::max(0, l - 1); generateParticles(N); }
+        else if (key == GLFW_KEY_R) { m++; generateParticles(N); }
+        else if (key == GLFW_KEY_F) { m--; generateParticles(N); }
+        else if (key == GLFW_KEY_T) { N += 100000; generateParticles(N); }
+        else if (key == GLFW_KEY_G) { N = std::max(1000, N - 100000); generateParticles(N); }
+        if (l > n - 1) l = n - 1;
+        if (l < 0) l = 0;
+        if (m > l) m = l;
+        if (m < -l) m = -l;
+        electron_r = (float)n / 3.0f;
+        std::cout << "n=" << n << " l=" << l << " m=" << m << " N=" << N << "\n";
+    });
 
-        // amount to extend the central X-axis line (in same units as size)
-        float extra = step * 3.0f; // adjust this factor to make the line stick out more/less
-        int midZ = divisions / 2;
-
-        // x axis
-        for (int yStep = 3; yStep <= 3; ++yStep) {
-            float y = 0;
-            for (int zStep = 0; zStep <= divisions; ++zStep) {
-                float z = -halfSize + zStep * step;
-                for (int xStep = 0; xStep < divisions; ++xStep) {
-                    float xStart = -halfSize + xStep * step;
-                    float xEnd = xStart + step;
-
-                    // If this is the central line (middle z), extend the very first and last segment
-                    if (zStep == midZ) {
-                        if (xStep == 0) {
-                            xStart -= extra; // extend left end
-                        }
-                        if (xStep == divisions - 1) {
-                            xEnd += extra;   // extend right end
-                        }
-                    }
-
-                    vertices.push_back(xStart); vertices.push_back(y); vertices.push_back(z);
-                    vertices.push_back(xEnd);   vertices.push_back(y); vertices.push_back(z);
-                }
-            }
-        }
-        // zaxis
-        for (int xStep = 0; xStep <= divisions; ++xStep) {
-            float x = -halfSize + xStep * step;
-            for (int yStep = 3; yStep <= 3; ++yStep) {
-                float y = 0;
-                for (int zStep = 0; zStep < divisions; ++zStep) {
-                    float zStart = -halfSize + zStep * step;
-                    float zEnd = zStart + step;
-                    vertices.push_back(x); vertices.push_back(y); vertices.push_back(zStart);
-                    vertices.push_back(x); vertices.push_back(y); vertices.push_back(zEnd);
-                }
-            }
-        }
-
-        return vertices;
-
-    }
-};
-Grid grid;
-
-// ================= Main Loop ================= //
-int main () {
-    GLint modelLoc = glGetUniformLocation(engine.shaderProgram, "model");
-    GLint objectColorLoc = glGetUniformLocation(engine.shaderProgram, "objectColor");
-    glUseProgram(engine.shaderProgram);
-    engine.setupCameraCallbacks();
-
-    // --- scale r for bigger orbitals ---
-    electron_r = float(n) / 3.0f;
-
-    // --- Sample particles ---
-    generateParticles(250000);
+    electron_r = (float)n / 3.0f;
+    generateParticles(std::min(N, 250000));
 
     float dt = 0.5f;
-    cout << "Starting simulation..." << endl;
     while (!glfwWindowShouldClose(engine.window)) {
-        grid.Draw(objectColorLoc);
-
-        // ------ Update Probability current ------
         for (Particle& p : particles) {
-            double r = length(p.pos);
+            double r = glm::length(p.pos);
             if (r > 1e-6) {
                 double theta = acos(p.pos.y / r);
                 p.vel = calculateProbabilityFlow(p, n, l, m);
-                vec3 temp_pos = p.pos + p.vel * dt;
-                double new_phi = atan2(temp_pos.z, temp_pos.x);
-                p.pos = engine.sphericalToCartesian(r, theta, new_phi);
+                glm::vec3 temp = p.pos + p.vel * dt;
+                double new_phi = atan2(temp.z, temp.x);
+                p.pos = sphericalToCartesian((float)r, (float)theta, (float)new_phi);
             }
         }
-        // ------ Draw Particles ------
-        engine.drawSpheres(particles);
-
-        glfwSwapBuffers(engine.window);
+        engine.drawSpheres(particles, camera);
         glfwPollEvents();
     }
 
-    // --- close ---
+    engine.sphereVertexBuffer->release();
+    engine.instanceBuffer->release();
+    engine.uniformBuffer->release();
+    if (engine.pipeline) engine.pipeline->release();
+    engine.commandQueue->release();
+    engine.device->release();
     glfwDestroyWindow(engine.window);
     glfwTerminate();
     return 0;
