@@ -12,46 +12,42 @@ What the model does:
 ## **Building Requirements:**
 
 1. C++ Compiler supporting C++ 17 or newer
-
-2. [Cmake](https://cmake.org/)
-
-3. [Vcpkg](https://vcpkg.io/en/)
-
-4. [Git](https://git-scm.com/)
+2. [CMake](https://cmake.org/)
+3. GLEW, GLFW3, GLM, OpenGL (install via package manager below)
 
 ## **Build Instructions:**
 
-1. Clone the repository:
-	-  `git clone https://github.com/kavan010/Atoms.git`
-2. CD into the newly cloned directory
-	- `cd ./Atoms` 
-3. Install dependencies with Vcpkg
-	- `vcpkg install`
-4. Get the vcpkg cmake toolchain file path
-	- `vcpkg integrate install`
-	- This will output something like : `CMake projects should use: "-DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake"`
-5. Create a build directory
-	- `mkdir build`
-6. Configure project with CMake
-	-  `cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake`
-	- Use the vcpkg cmake toolchain path from above
-7. Build the project
-	- `cmake --build build`
-8. Run the program
-	- The executables will be located in the build folder
+### macOS (Homebrew)
 
-### Alternative: Debian/Ubuntu apt workaround
+```bash
+brew install cmake glew glfw glm
+cmake -B build -S .
+cmake --build build
+```
 
-If you don't want to use vcpkg, or you just need a quick way to install the native development packages on Debian/Ubuntu, install these packages and then run the normal CMake steps above:
+### Linux (Debian/Ubuntu)
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake \
 	libglew-dev libglfw3-dev libglm-dev libgl1-mesa-dev
+cmake -B build -S .
+cmake --build build
 ```
 
-This provides the GLEW, GLFW, GLM and OpenGL development files so `find_package(...)` calls in `CMakeLists.txt` can locate the libraries. After installing, run the `cmake -B build -S .` and `cmake --build build` commands as shown in the Build Instructions.
+### Executables
 
-## **How the code works:**
-the 2D bohr model works is in atom.cpp, the raytracer and realtime models are right beside
-* warning, I would recommend running the realtime model with <100k particles first to be sure, raytracer is super compu-intensive so make sure your system can handle it!
+After building, the following executables are in the `build` folder:
+
+| Executable      | Description                                                       |
+|-----------------|-------------------------------------------------------------------|
+| `atom`          | 2D Bohr model                                                     |
+| `atom_raytracer`| GPU ray-traced 3D visualization                                    |
+| `atom_realtime` | Real-time 3D particle visualization (interactive quantum controls) |
+| `wave_atom_2d`  | 2D wave function visualization                                    |
+
+## **How the code works**
+
+Source files: `atom.cpp` (2D Bohr model), `atom_raytracer.cpp` (ray-traced 3D), `atom_realtime.cpp` (real-time 3D), `wave_atom_2d.cpp` (2D wave).
+
+**Performance note:** Run the realtime model with &lt;100k particles first to verify stability. The raytracer is compute-intensive—ensure your system can handle it.
