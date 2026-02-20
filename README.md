@@ -9,28 +9,19 @@ What the model does:
 2. Using the schrodinger equation, sample r, theta, and phi coordinates from those quantum numbers
 3. Render those possible positions and color code them relative to their probabilities (brighter areas have higher probability)
 
-## **Building Requirements:**
+## **Building Requirements**
 
-1. C++ Compiler supporting C++ 17 or newer
-2. [CMake](https://cmake.org/)
-3. GLEW, GLFW3, GLM, OpenGL (install via package manager below)
+- **macOS only** — uses Apple Metal for GPU rendering
+- C++17 or newer
+- [CMake](https://cmake.org/)
+- GLFW3, GLM (metal-cpp is fetched automatically)
 
-## **Build Instructions:**
+## **Build Instructions**
 
 ### macOS (Homebrew)
 
 ```bash
-brew install cmake glew glfw glm
-cmake -B build -S .
-cmake --build build
-```
-
-### Linux (Debian/Ubuntu)
-
-```bash
-sudo apt update
-sudo apt install build-essential cmake \
-	libglew-dev libglfw3-dev libglm-dev libgl1-mesa-dev
+brew install cmake glfw glm
 cmake -B build -S .
 cmake --build build
 ```
@@ -42,12 +33,13 @@ After building, the following executables are in the `build` folder:
 | Executable      | Description                                                       |
 |-----------------|-------------------------------------------------------------------|
 | `atom`          | 2D Bohr model                                                     |
-| `atom_raytracer`| GPU ray-traced 3D visualization                                    |
-| `atom_realtime` | Real-time 3D particle visualization (interactive quantum controls) |
+| `atom_raytracer`| GPU ray-traced 3D visualization (Metal)                           |
+| `atom_realtime` | Real-time 3D particle visualization (Metal, instanced rendering) |
 | `wave_atom_2d`  | 2D wave function visualization                                    |
+| `metal_test`    | Minimal Metal window test                                         |
 
 ## **How the code works**
 
 Source files: `atom.cpp` (2D Bohr model), `atom_raytracer.cpp` (ray-traced 3D), `atom_realtime.cpp` (real-time 3D), `wave_atom_2d.cpp` (2D wave).
 
-**Performance note:** Run the realtime model with &lt;100k particles first to verify stability. The raytracer is compute-intensive—ensure your system can handle it.
+**Performance note:** Run the realtime model with <100k particles first to verify stability. The raytracer is compute-intensive—ensure your system can handle it.
