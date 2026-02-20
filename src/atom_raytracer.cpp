@@ -248,7 +248,7 @@ vec4 inferno2(double r, double theta, double phi, int n, int l, int m)
     double t = log10(intensity + 1e-12) + 12.0;
     t /= 12.0;
 
-    t = clamp(t, 0.0, 1.0);
+    t = std::clamp(t, 0.0, 1.0);
 
     // --- inferno-style ramp ---
     float rC = smoothstep(0.15f, 1.0f, static_cast<float>(t));
@@ -376,7 +376,7 @@ struct Camera {
     double lastX = 0.0, lastY = 0.0;
 
     vec3 position() const {
-        float clampedElevation = clamp(elevation, 0.01f, float(M_PI) - 0.01f);
+        float clampedElevation = std::clamp(elevation, 0.01f, float(M_PI) - 0.01f);
         return vec3(
             radius * sin(clampedElevation) * cos(azimuth),
             radius * cos(clampedElevation),
@@ -449,13 +449,19 @@ struct Engine {
     // Raytracing vals
     GLuint raytracingShaderProgram;
     GLuint fullscreen_VAO, fullscreen_VBO;
-    GLuint ssbo_spheres;
+    GLuint tbo_buffer;
+    GLuint tbo_texture;
+    static const int MAX_SPHERES = 200000;
 
     Engine () {
         // --- Init GLFW ---
         if (!glfwInit()) { cerr << "GLFW init failed\n"; exit(EXIT_FAILURE); } 
 
         // --- Init Window ---
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Quantum Simulation by kavan G - Raytraced", nullptr, nullptr);
         if (!window) { cerr << "Failed to create GLFW window\n"; glfwTerminate(); exit(EXIT_FAILURE); } 
         glfwMakeContextCurrent(window); glViewport(0, 0, WIDTH, HEIGHT); glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -467,14 +473,17 @@ struct Engine {
         // blending for smooth rendering
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        // --- NEW: Initialize the SSBO ---
-        glGenBuffers(1, &ssbo_spheres);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_spheres);
-        // Allocate space for 25,000 spheres (matches your particle count)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, N * sizeof(Sphere), NULL, GL_DYNAMIC_DRAW);
-        // Bind the buffer to index 0 so the shader can see it
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo_spheres);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        // --- TBO for sphere data (macOS-compatible, no SSBO) ---
+        glGenBuffers(1, &tbo_buffer);
+        glBindBuffer(GL_TEXTURE_BUFFER, tbo_buffer);
+        glBufferData(GL_TEXTURE_BUFFER, MAX_SPHERES * 2 * sizeof(vec4), NULL, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_TEXTURE_BUFFER, 0);
+
+        glGenTextures(1, &tbo_texture);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_BUFFER, tbo_texture);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, tbo_buffer);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
 
         raytracingShaderProgram = CreateRaytracingShaderProgram();
         setupFullscreenQuad();
@@ -507,7 +516,7 @@ struct Engine {
     }
     GLuint CreateRaytracingShaderProgram() {
         const char* vertexShaderSource = R"(
-            #version 430 core
+            #version 410 core
             layout (location = 0) in vec2 aPos;
             out vec2 ScreenPos;
             void main() {
@@ -517,7 +526,7 @@ struct Engine {
         )";
 
         const char* fragmentShaderSource = R"(
-            #version 430 core
+            #version 410 core
             out vec4 FragColor;
             in vec2 ScreenPos;
 
@@ -526,15 +535,8 @@ struct Engine {
             uniform vec3 light_pos;
             uniform float light_intensity;
             uniform vec3 ambient_light;
-
-            struct Sphere {
-                vec4 center_radius; // xyz = center, w = radius
-                vec4 color;
-            };
-
-            layout(std430, binding = 0) buffer SphereBuffer {
-                Sphere spheres[];
-            };
+            uniform samplerBuffer sphere_data;
+            uniform int sphere_count;
 
             // Ray-sphere intersection test. Returns distance t or -1.0 for no hit.
             float intersect_sphere(vec3 ray_origin, vec3 ray_dir, vec3 sphere_center, float sphere_radius) {
@@ -552,9 +554,9 @@ struct Engine {
 
             // Checks for any intersection along a ray up to a max distance. For shadows.
             bool any_hit(vec3 ray_origin, vec3 ray_dir, float max_dist) {
-                uint num_spheres = spheres.length();
-                for (uint i = 0; i < num_spheres; ++i) {
-                    float t = intersect_sphere(ray_origin, ray_dir, spheres[i].center_radius.xyz, spheres[i].center_radius.w);
+                for (int i = 0; i < sphere_count; ++i) {
+                    vec4 center_radius = texelFetch(sphere_data, i * 2);
+                    float t = intersect_sphere(ray_origin, ray_dir, center_radius.xyz, center_radius.w);
                     if (t > 0.0 && t < max_dist) {
                         return true;
                     }
@@ -570,41 +572,39 @@ struct Engine {
                 // Find closest sphere intersection
                 float t_min = 1e20;
                 int closest_sphere_idx = -1;
-                uint num_spheres = spheres.length();
-                for (uint i = 0; i < num_spheres; ++i) {
-                    float t = intersect_sphere(camera_pos, ray_dir, spheres[i].center_radius.xyz, spheres[i].center_radius.w);
+                for (int i = 0; i < sphere_count; ++i) {
+                    vec4 center_radius = texelFetch(sphere_data, i * 2);
+                    float t = intersect_sphere(camera_pos, ray_dir, center_radius.xyz, center_radius.w);
                     if (t > 0.0 && t < t_min) {
                         t_min = t;
-                        closest_sphere_idx = int(i);
+                        closest_sphere_idx = i;
                     }
                 }
 
                 if (closest_sphere_idx != -1) {
                     // We hit a sphere, calculate lighting
+                    vec4 center_radius = texelFetch(sphere_data, closest_sphere_idx * 2);
+                    vec4 sphere_color_vec = texelFetch(sphere_data, closest_sphere_idx * 2 + 1);
                     vec3 hit_pos = camera_pos + t_min * ray_dir;
-                    vec3 normal = normalize(hit_pos - spheres[closest_sphere_idx].center_radius.xyz);
-                    vec3 sphere_color = spheres[closest_sphere_idx].color.rgb;
+                    vec3 normal = normalize(hit_pos - center_radius.xyz);
+                    vec3 sphere_color = sphere_color_vec.rgb;
 
                     // Shadow calculation
                     vec3 light_dir = normalize(light_pos - hit_pos);
                     float light_dist = length(light_pos - hit_pos);
                     float shadow_factor = 1.0;
-                    // Cast shadow ray, offsetting origin slightly to avoid self-shadowing
                     if (any_hit(hit_pos + normal * 0.001, light_dir, light_dist)) {
-                        shadow_factor = 0.0; // Point is in shadow
+                        shadow_factor = 0.0;
                     }
 
                     // Diffuse lighting from point light
                     float diff = max(dot(normal, light_dir), 0.0);
                     vec3 diffuse = diff * sphere_color * shadow_factor * light_intensity;
-                    
-                    // Ambient lighting
                     vec3 ambient = ambient_light * sphere_color * light_intensity;
-                    
-                    FragColor = vec4(ambient + diffuse, spheres[closest_sphere_idx].color.a);
+
+                    FragColor = vec4(ambient + diffuse, sphere_color_vec.a);
                 } else {
-                    // Nothing hit, draw background
-                    FragColor = vec4(0.0f, 0.0f, 0.0f, 0.0f); // Black Background
+                    FragColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
                 }
             }
         )";
@@ -632,41 +632,33 @@ struct Engine {
     }
     void runRayTracer(vector<Sphere> sphere_data) {
         if (sphere_data.empty()) return;
-        // Update GPU buffer with current sphere positions
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_spheres);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sphere_data.size() * sizeof(Sphere), sphere_data.data());
-        
-        // Crucial: Link the buffer to binding point 0 for the shader
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo_spheres);
+        int count = (int)sphere_data.size();
 
-        // Raytracing Render
+        glBindBuffer(GL_TEXTURE_BUFFER, tbo_buffer);
+        glBufferSubData(GL_TEXTURE_BUFFER, 0, count * sizeof(Sphere), sphere_data.data());
+        glBindBuffer(GL_TEXTURE_BUFFER, 0);
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(raytracingShaderProgram);
-
-        // Update GPU buffer
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_spheres);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sphere_data.size() * sizeof(Sphere), sphere_data.data());
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        // Raytracing Render
-        glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram( raytracingShaderProgram);
 
         mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
         mat4 projection = perspective(radians(45.0f), (float)WIDTH/HEIGHT, 0.1f, 10000.0f);
         mat4 invViewProj = inverse(projection * view);
 
-        // Define light properties and pass them to the shader
         vec3 light_pos = vec3(0.0f, 50.0f, 50.0f);
         vec3 ambient_light = vec3(0.2f);
         float light_intensity = 3.0f;
 
-        glUniform3fv(glGetUniformLocation( raytracingShaderProgram, "camera_pos"), 1, value_ptr(camera.position()));
-        glUniformMatrix4fv(glGetUniformLocation( raytracingShaderProgram, "inv_view_proj"), 1, GL_FALSE, value_ptr(invViewProj));
-        glUniform3fv(glGetUniformLocation( raytracingShaderProgram, "light_pos"), 1, value_ptr(light_pos));
-        glUniform3fv(glGetUniformLocation( raytracingShaderProgram, "ambient_light"), 1, value_ptr(ambient_light));
+        glUniform3fv(glGetUniformLocation(raytracingShaderProgram, "camera_pos"), 1, value_ptr(camera.position()));
+        glUniformMatrix4fv(glGetUniformLocation(raytracingShaderProgram, "inv_view_proj"), 1, GL_FALSE, value_ptr(invViewProj));
+        glUniform3fv(glGetUniformLocation(raytracingShaderProgram, "light_pos"), 1, value_ptr(light_pos));
+        glUniform3fv(glGetUniformLocation(raytracingShaderProgram, "ambient_light"), 1, value_ptr(ambient_light));
         glUniform1f(glGetUniformLocation(raytracingShaderProgram, "light_intensity"), light_intensity);
-        
+        glUniform1i(glGetUniformLocation(raytracingShaderProgram, "sphere_count"), count);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_BUFFER, tbo_texture);
+        glUniform1i(glGetUniformLocation(raytracingShaderProgram, "sphere_data"), 0);
+
         glBindVertexArray(fullscreen_VAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
@@ -782,7 +774,8 @@ int main () {
     }
 
     // --- Cleanup ---
-    glDeleteBuffers(1, &engine.ssbo_spheres);
+    glDeleteTextures(1, &engine.tbo_texture);
+    glDeleteBuffers(1, &engine.tbo_buffer);
     
     glfwDestroyWindow(engine.window);
     glfwTerminate();
