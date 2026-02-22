@@ -31,16 +31,20 @@ cmake --build build
 
 | Key     | Action                        |
 |---------|-------------------------------|
-| W / S   | Increase / decrease n         |
-| E / D   | Increase / decrease l         |
-| R / F   | Increase / decrease m         |
+| W / S   | Increase / decrease shell (n)  |
+| E / D   | Increase / decrease subshell (ℓ) |
+| R / F   | Increase / decrease orientation (m) |
 | T / G   | +/- 100,000 particles         |
 | C       | Toggle color mode (fire/inferno) |
 | V       | Toggle realtime / raytraced   |
 | X       | Toggle cutaway view           |
-| Space   | Pause / resume animation      |
+| Space / P | Pause / resume animation (P works with Full Keyboard Access) |
 | Drag    | Orbit camera                  |
 | Scroll  | Zoom                          |
+
+The HUD overlay shows the current orbital, quantum numbers (shell n, subshell ℓ,
+orientation m), energy, particle count, and render mode, with key hints for all
+controls.
 
 ## Quantum numbers
 

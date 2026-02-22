@@ -23,8 +23,9 @@
     self = [super init];
     if (!self) return nil;
     _device = device;
-    _width = 600;
-    _height = 160;
+    /* 2x resolution for Retina: 1440×400 (logical 720×200) */
+    _width = 1440;
+    _height = 400;
 
     _bitmapData = calloc(_width * _height, 4);
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -40,12 +41,13 @@
     texDesc.usage = MTLTextureUsageShaderRead;
     _hudTexture = [device newTextureWithDescriptor:texDesc];
 
+    /* Quad: left half, top; bottom at 0.55 to fit taller HUD */
     float quadVerts[] = {
         -1.0f, 1.0f, 0, 0,
-        -1.0f, 0.60f, 0, 1,
+        -1.0f, 0.55f, 0, 1,
          0.0f, 1.0f, 1, 0,
-        -1.0f, 0.60f, 0, 1,
-         0.0f, 0.60f, 1, 1,
+        -1.0f, 0.55f, 0, 1,
+         0.0f, 0.55f, 1, 1,
          0.0f, 1.0f, 1, 0
     };
     _quadBuffer = [device newBufferWithBytes:quadVerts length:sizeof(quadVerts) options:MTLResourceStorageModeShared];
@@ -70,19 +72,30 @@
     CGContextSetRGBFillColor(_cgContext, 0.0, 0.0, 0.0, 0.55);
     CGContextFillRect(_cgContext, CGRectMake(0, 0, (CGFloat)_width, (CGFloat)_height));
 
+    CGContextSetShouldSmoothFonts(_cgContext, YES);
+    CGContextSetAllowsFontSmoothing(_cgContext, YES);
+
     const char* sublabels = "spdfgh";
     float energy = -13.6f / (float)(_n * _n);
     char tmp[256];
+    char countStr[32];
+    if (_count >= 1000000)
+        snprintf(countStr, sizeof(countStr), "%d,%03d,%03d", _count / 1000000, (_count % 1000000) / 1000, _count % 1000);
+    else if (_count >= 1000)
+        snprintf(countStr, sizeof(countStr), "%d,%03d", _count / 1000, _count % 1000);
+    else
+        snprintf(countStr, sizeof(countStr), "%d", _count);
 
-    NSFont* mainFont = [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightMedium];
-    NSFont* smallFont = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    /* 2x font sizes for Retina: 30pt and 22pt */
+    NSFont* mainFont = [NSFont monospacedSystemFontOfSize:30 weight:NSFontWeightMedium];
+    NSFont* smallFont = [NSFont monospacedSystemFontOfSize:22 weight:NSFontWeightRegular];
 
-    snprintf(tmp, sizeof(tmp), "Orbital: %d%c  n=%d l=%d m=%d  E=%.2f eV  N=%d  [%s]%s",
-             _n, (_l < 6 ? sublabels[_l] : '?'), _n, _l, _m, energy, _count,
+    snprintf(tmp, sizeof(tmp), "Orbital: %d%c  |  shell n=%d  subshell l=%d  orient m=%d  |  E=%.2f eV  |  Particles: %s  |  %s%s",
+             _n, (_l < 6 ? sublabels[_l] : '?'), _n, _l, _m, energy, countStr,
              (_mode == 0 ? "Realtime" : "Raytraced"), (_animating ? "" : " [PAUSED]"));
     NSString* line1 = [NSString stringWithUTF8String:tmp];
 
-    snprintf(tmp, sizeof(tmp), "[W/S] n   [E/D] l   [R/F] m   [T/G] particles   [V] mode   [X] cutaway   [Space] pause");
+    snprintf(tmp, sizeof(tmp), "[W/S] shell  [E/D] subshell  [R/F] orient  [T/G] pts  [C] color  [V] mode  [X] cut  [Space/P] pause");
     NSString* line2 = [NSString stringWithUTF8String:tmp];
 
     NSDictionary* attr1 = @{
@@ -94,17 +107,18 @@
         NSForegroundColorAttributeName: [NSColor colorWithWhite:0.7 alpha:1.0]
     };
 
-    CGFloat y = (CGFloat)_height - 35;
+    /* Padding: line1 at top-40, line2 at top-88 */
+    CGFloat y = (CGFloat)_height - 40;
     NSAttributedString* as1 = [[NSAttributedString alloc] initWithString:line1 attributes:attr1];
     CTLineRef ct1 = CTLineCreateWithAttributedString((CFAttributedStringRef)as1);
-    CGContextSetTextPosition(_cgContext, 10, y);
+    CGContextSetTextPosition(_cgContext, 20, y);
     CTLineDraw(ct1, _cgContext);
     CFRelease(ct1);
 
-    y -= 22;
+    y -= 48;
     NSAttributedString* as2 = [[NSAttributedString alloc] initWithString:line2 attributes:attr2];
     CTLineRef ct2 = CTLineCreateWithAttributedString((CFAttributedStringRef)as2);
-    CGContextSetTextPosition(_cgContext, 10, y);
+    CGContextSetTextPosition(_cgContext, 20, y);
     CTLineDraw(ct2, _cgContext);
     CFRelease(ct2);
 

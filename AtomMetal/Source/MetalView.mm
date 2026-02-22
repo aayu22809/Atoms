@@ -147,6 +147,13 @@
 }
 
 - (void)keyDown:(NSEvent*)event {
+    /* Pause: Space (keyCode 49 or characters) or P (keyCode 35) for Full Keyboard Access */
+    if (event.keyCode == 49 || event.keyCode == 35 ||
+        [event.charactersIgnoringModifiers isEqualToString:@" "]) {
+        _animating = !_animating;
+        return;
+    }
+
     BOOL changed = NO;
     switch (event.keyCode) {
         case 13: _n = std::min(_n + 1, 6); changed = YES; break;
@@ -160,7 +167,6 @@
         case 8:  _colorMode = (_colorMode + 1) % 2; changed = YES; break;
         case 9:  _renderMode = (_renderMode + 1) % 2; break;
         case 7:  _cutaway = !_cutaway; break;
-        case 49: _animating = !_animating; break;
         default: break;
     }
     _l = std::clamp(_l, 0, _n - 1);
