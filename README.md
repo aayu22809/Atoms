@@ -5,7 +5,7 @@ built with Apple Metal, Cocoa, and Core Text. No OpenGL, no GLFW, no GLM.
 
 **[Demo video](https://www.youtube.com/watch?v=iZVhUinZ9FU)**
 
-![Quantum orbital visualization (5f, n=5 l=3 m=1)](assets/Screenshot%202026-02-21%20at%2010.04.58%20PM.png)
+![Quantum orbital visualization (5f, n=5 l=3 m=1)](assets/Screenshot%202026-02-21%20at%2010.04.58 PM.png)
 
 ## What it visualizes
 
